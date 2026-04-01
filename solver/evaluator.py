@@ -32,7 +32,6 @@ _NEIGHBOR_DELTAS: Final[tuple[tuple[int, int], ...]] = (
 )
 _EPS: Final[float] = 1e-12
 _AREA_TOLERANCE: Final[float] = 1e-12
-_MAX_INTEGRATION_DEPTH: Final[int] = 30
 
 
 @dataclass(frozen=True)
@@ -57,6 +56,53 @@ class BoardEvaluation:
     max_prefix: Score
     first_missing: int
     witness: NumberTrace
+
+
+@dataclass(frozen=True)
+class _LineFunction:
+    slope: float
+    intercept: float
+
+    def value_at(self, x: float) -> float:
+        return (self.slope * x) + self.intercept
+
+    def integral(self, left: float, right: float) -> float:
+        return (0.5 * self.slope * ((right * right) - (left * left))) + (
+            self.intercept * (right - left)
+        )
+
+
+@dataclass(frozen=True)
+class _CircleFunction:
+    center_x: float
+    center_y: float
+    radius: float
+    sign: int
+
+    def value_at(self, x: float) -> float:
+        delta = max(0.0, (self.radius * self.radius) - ((x - self.center_x) ** 2))
+        return self.center_y + (self.sign * math.sqrt(delta))
+
+    def integral(self, left: float, right: float) -> float:
+        return _circle_integral(self, right) - _circle_integral(self, left)
+
+
+BoundaryFunction: TypeAlias = _LineFunction | _CircleFunction
+
+
+@dataclass(frozen=True)
+class _ShapeSlab:
+    left: float
+    right: float
+    lower: BoundaryFunction
+    upper: BoundaryFunction
+
+
+@dataclass(frozen=True)
+class _ShapeProfile:
+    xmin: float
+    xmax: float
+    slabs: tuple[_ShapeSlab, ...]
 
 
 def area_of_paper(paper: Paper, /) -> float:
@@ -90,74 +136,149 @@ def evaluate_prefix_visible_areas(papers: PaperStack, /) -> tuple[VisibleAreas, 
 
 
 def _visible_area_against_occluders(target: Paper, occluders: PaperStack) -> float:
-    xmin, xmax = _x_bounds(target)
-    if xmax - xmin <= _EPS:
+    target_profile = _build_shape_profile(target)
+    if target_profile.xmax - target_profile.xmin <= _EPS:
         return 0.0
 
-    relevant_occluders = tuple(
-        occluder
-        for occluder in occluders
-        if _x_bounds(occluder)[0] <= xmax + _EPS and _x_bounds(occluder)[1] >= xmin - _EPS
+    relevant_profiles = tuple(
+        profile
+        for profile in (_build_shape_profile(occluder) for occluder in occluders)
+        if profile.xmin <= target_profile.xmax + _EPS and profile.xmax >= target_profile.xmin - _EPS
     )
-    breakpoints = _integration_breakpoints(target, relevant_occluders)
-    visible_area = 0.0
+    breakpoints = _collect_breakpoints(target_profile, relevant_profiles)
+    target_area = _integrate_target_profile(target_profile)
+    covered_area = 0.0
     for left, right in zip(breakpoints, breakpoints[1:]):
         if right - left <= _EPS:
             continue
-        visible_area += _adaptive_simpson(
-            lambda x: _visible_length_at_x(target, relevant_occluders, x),
-            left,
-            right,
-            _AREA_TOLERANCE,
-            _MAX_INTEGRATION_DEPTH,
+        covered_area += _covered_area_in_slab(target_profile, relevant_profiles, left, right)
+    visible_area = target_area - covered_area
+    if abs(visible_area) <= _AREA_TOLERANCE:
+        return 0.0
+    return max(0.0, visible_area)
+
+
+def _build_shape_profile(paper: Paper) -> _ShapeProfile:
+    if isinstance(paper, CirclePaper):
+        center_x, center_y = paper.center
+        radius = float(paper.radius)
+        slab = _ShapeSlab(
+            left=center_x - radius,
+            right=center_x + radius,
+            lower=_CircleFunction(center_x=float(center_x), center_y=float(center_y), radius=radius, sign=-1),
+            upper=_CircleFunction(center_x=float(center_x), center_y=float(center_y), radius=radius, sign=1),
         )
-    return visible_area
+        return _ShapeProfile(xmin=slab.left, xmax=slab.right, slabs=(slab,))
 
-
-def _visible_length_at_x(target: Paper, occluders: PaperStack, x: float) -> float:
-    target_interval = _vertical_interval(target, x)
-    if target_interval is None:
-        return 0.0
-
-    covered_intervals: list[VerticalInterval] = []
-    for occluder in occluders:
-        occluder_interval = _vertical_interval(occluder, x)
-        if occluder_interval is None:
+    xs = sorted({float(vertex[0]) for vertex in paper.vertices})
+    slabs: list[_ShapeSlab] = []
+    for left, right in zip(xs, xs[1:]):
+        if right - left <= _EPS:
             continue
-        overlap = _intersect_intervals(target_interval, occluder_interval)
-        if overlap is not None:
-            covered_intervals.append(overlap)
+        midpoint = (left + right) / 2.0
+        active_lines = [
+            line
+            for start, end in _triangle_edges(paper)
+            if (line := _line_function_for_edge(start, end)) is not None
+            and _x_within_edge(midpoint, start, end)
+        ]
+        if len(active_lines) < 2:
+            continue
+        active_lines.sort(key=lambda function: function.value_at(midpoint))
+        slabs.append(_ShapeSlab(left=left, right=right, lower=active_lines[0], upper=active_lines[-1]))
 
-    visible_length = (target_interval[1] - target_interval[0]) - _union_length(covered_intervals)
-    if abs(visible_length) <= _AREA_TOLERANCE:
-        return 0.0
-    return max(0.0, visible_length)
+    if not slabs:
+        xmin = float(min(vertex[0] for vertex in paper.vertices))
+        return _ShapeProfile(xmin=xmin, xmax=xmin, slabs=())
+
+    return _ShapeProfile(xmin=slabs[0].left, xmax=slabs[-1].right, slabs=tuple(slabs))
 
 
-def _integration_breakpoints(target: Paper, occluders: PaperStack) -> tuple[float, ...]:
-    xmin, xmax = _x_bounds(target)
-    points = {xmin, xmax}
-    for paper in (target, *occluders):
-        for point in _shape_x_breakpoints(paper):
-            if xmin + _EPS < point < xmax - _EPS:
-                points.add(point)
+def _collect_breakpoints(target: _ShapeProfile, occluders: tuple[_ShapeProfile, ...]) -> tuple[float, ...]:
+    points = {target.xmin, target.xmax}
+    slabs = [*target.slabs]
+    for occluder in occluders:
+        for slab in occluder.slabs:
+            left = max(target.xmin, slab.left)
+            right = min(target.xmax, slab.right)
+            if right - left <= _EPS:
+                continue
+            points.add(left)
+            points.add(right)
+            slabs.append(_ShapeSlab(left=left, right=right, lower=slab.lower, upper=slab.upper))
+
+    boundary_pieces: list[tuple[float, float, BoundaryFunction]] = []
+    for slab in slabs:
+        boundary_pieces.append((slab.left, slab.right, slab.lower))
+        boundary_pieces.append((slab.left, slab.right, slab.upper))
+
+    for index, (left1, right1, function1) in enumerate(boundary_pieces):
+        for left2, right2, function2 in boundary_pieces[index + 1 :]:
+            left = max(target.xmin, left1, left2)
+            right = min(target.xmax, right1, right2)
+            if right - left <= _EPS:
+                continue
+            for point in _function_intersections(function1, function2, left, right):
+                if left + _EPS < point < right - _EPS:
+                    points.add(point)
+
     return tuple(sorted(points))
 
 
-def _shape_x_breakpoints(paper: Paper) -> tuple[float, ...]:
-    if isinstance(paper, CirclePaper):
-        center_x, _ = paper.center
-        return (center_x - paper.radius, center_x + paper.radius)
-    return tuple(float(vertex[0]) for vertex in paper.vertices)
+def _integrate_target_profile(profile: _ShapeProfile) -> float:
+    return sum(
+        slab.upper.integral(slab.left, slab.right) - slab.lower.integral(slab.left, slab.right)
+        for slab in profile.slabs
+    )
 
 
-def _x_bounds(paper: Paper) -> tuple[float, float]:
-    if isinstance(paper, CirclePaper):
-        center_x, _ = paper.center
-        return center_x - paper.radius, center_x + paper.radius
+def _covered_area_in_slab(
+    target: _ShapeProfile,
+    occluders: tuple[_ShapeProfile, ...],
+    left: float,
+    right: float,
+) -> float:
+    midpoint = (left + right) / 2.0
+    target_slab = _find_slab(target.slabs, midpoint)
+    if target_slab is None:
+        return 0.0
 
-    xs = [vertex[0] for vertex in paper.vertices]
-    return float(min(xs)), float(max(xs))
+    clipped_intervals: list[tuple[BoundaryFunction, BoundaryFunction]] = []
+    for occluder in occluders:
+        occluder_slab = _find_slab(occluder.slabs, midpoint)
+        if occluder_slab is None:
+            continue
+
+        lower = (
+            occluder_slab.lower
+            if occluder_slab.lower.value_at(midpoint) >= target_slab.lower.value_at(midpoint) - _EPS
+            else target_slab.lower
+        )
+        upper = (
+            occluder_slab.upper
+            if occluder_slab.upper.value_at(midpoint) <= target_slab.upper.value_at(midpoint) + _EPS
+            else target_slab.upper
+        )
+        if upper.value_at(midpoint) - lower.value_at(midpoint) <= _EPS:
+            continue
+        clipped_intervals.append((lower, upper))
+
+    if not clipped_intervals:
+        return 0.0
+
+    clipped_intervals.sort(key=lambda interval: interval[0].value_at(midpoint))
+    merged_area = 0.0
+    current_lower, current_upper = clipped_intervals[0]
+    for next_lower, next_upper in clipped_intervals[1:]:
+        if next_lower.value_at(midpoint) > current_upper.value_at(midpoint) + _EPS:
+            merged_area += current_upper.integral(left, right) - current_lower.integral(left, right)
+            current_lower, current_upper = next_lower, next_upper
+            continue
+        if next_upper.value_at(midpoint) > current_upper.value_at(midpoint) + _EPS:
+            current_upper = next_upper
+
+    merged_area += current_upper.integral(left, right) - current_lower.integral(left, right)
+    return merged_area
 
 
 def _vertical_interval(paper: Paper, x: float) -> VerticalInterval | None:
@@ -235,83 +356,138 @@ def _union_length(intervals: list[VerticalInterval]) -> float:
     return total
 
 
-def _adaptive_simpson(
-    function,
-    left: float,
-    right: float,
-    tolerance: float,
-    depth: int,
-) -> float:
-    midpoint = (left + right) / 2.0
-    f_left = function(left)
-    f_mid = function(midpoint)
-    f_right = function(right)
-    whole = _simpson(left, right, f_left, f_mid, f_right)
-    return _adaptive_simpson_recursive(
-        function,
-        left,
-        midpoint,
-        right,
-        f_left,
-        f_mid,
-        f_right,
-        whole,
-        tolerance,
-        depth,
+def _triangle_edges(paper: TrianglePaper) -> tuple[tuple[Position, Position], ...]:
+    vertices = paper.vertices
+    return tuple(zip(vertices, (*vertices[1:], vertices[0])))
+
+
+def _line_function_for_edge(start: Position, end: Position) -> _LineFunction | None:
+    x1, y1 = start
+    x2, y2 = end
+    if abs(x1 - x2) <= _EPS:
+        return None
+    slope = (y2 - y1) / (x2 - x1)
+    intercept = y1 - (slope * x1)
+    return _LineFunction(slope=float(slope), intercept=float(intercept))
+
+
+def _x_within_edge(x: float, start: Position, end: Position) -> bool:
+    lower_x = min(start[0], end[0])
+    upper_x = max(start[0], end[0])
+    return lower_x - _EPS <= x <= upper_x + _EPS
+
+
+def _find_slab(slabs: tuple[_ShapeSlab, ...], x: float) -> _ShapeSlab | None:
+    for slab in slabs:
+        if slab.left - _EPS <= x <= slab.right + _EPS:
+            return slab
+    return None
+
+
+def _function_intersections(
+    left: BoundaryFunction,
+    right: BoundaryFunction,
+    xmin: float,
+    xmax: float,
+) -> tuple[float, ...]:
+    if isinstance(left, _LineFunction) and isinstance(right, _LineFunction):
+        return _line_line_intersections(left, right, xmin, xmax)
+    if isinstance(left, _LineFunction) and isinstance(right, _CircleFunction):
+        return _line_circle_intersections(left, right, xmin, xmax)
+    if isinstance(left, _CircleFunction) and isinstance(right, _LineFunction):
+        return _line_circle_intersections(right, left, xmin, xmax)
+    return _circle_circle_intersections(left, right, xmin, xmax)
+
+
+def _line_line_intersections(
+    left: _LineFunction,
+    right: _LineFunction,
+    xmin: float,
+    xmax: float,
+) -> tuple[float, ...]:
+    slope_delta = left.slope - right.slope
+    if abs(slope_delta) <= _EPS:
+        return ()
+    point = (right.intercept - left.intercept) / slope_delta
+    if xmin - _EPS <= point <= xmax + _EPS:
+        return (point,)
+    return ()
+
+
+def _line_circle_intersections(
+    line: _LineFunction,
+    circle: _CircleFunction,
+    xmin: float,
+    xmax: float,
+) -> tuple[float, ...]:
+    shifted_intercept = line.intercept - circle.center_y
+    qa = 1.0 + (line.slope * line.slope)
+    qb = (2.0 * line.slope * shifted_intercept) - (2.0 * circle.center_x)
+    qc = (circle.center_x * circle.center_x) + (shifted_intercept * shifted_intercept) - (
+        circle.radius * circle.radius
     )
+    discriminant = (qb * qb) - (4.0 * qa * qc)
+    if discriminant < -_EPS:
+        return ()
+    discriminant = max(0.0, discriminant)
+    sqrt_discriminant = math.sqrt(discriminant)
+    roots = {
+        (-qb - sqrt_discriminant) / (2.0 * qa),
+        (-qb + sqrt_discriminant) / (2.0 * qa),
+    }
+    matches: list[float] = []
+    for root in roots:
+        if not (xmin - _EPS <= root <= xmax + _EPS):
+            continue
+        if abs(line.value_at(root) - circle.value_at(root)) <= 1e-9:
+            matches.append(root)
+    return tuple(sorted(matches))
 
 
-def _adaptive_simpson_recursive(
-    function,
-    left: float,
-    midpoint: float,
-    right: float,
-    f_left: float,
-    f_mid: float,
-    f_right: float,
-    whole: float,
-    tolerance: float,
-    depth: int,
-) -> float:
-    left_mid = (left + midpoint) / 2.0
-    right_mid = (midpoint + right) / 2.0
-    f_left_mid = function(left_mid)
-    f_right_mid = function(right_mid)
+def _circle_circle_intersections(
+    left: _CircleFunction,
+    right: _CircleFunction,
+    xmin: float,
+    xmax: float,
+) -> tuple[float, ...]:
+    dx = right.center_x - left.center_x
+    dy = right.center_y - left.center_y
+    distance = math.hypot(dx, dy)
+    if distance <= _EPS:
+        return ()
+    if distance > left.radius + right.radius + _EPS:
+        return ()
+    if distance < abs(left.radius - right.radius) - _EPS:
+        return ()
 
-    left_area = _simpson(left, midpoint, f_left, f_left_mid, f_mid)
-    right_area = _simpson(midpoint, right, f_mid, f_right_mid, f_right)
-    delta = left_area + right_area - whole
+    a = ((left.radius * left.radius) - (right.radius * right.radius) + (distance * distance)) / (2.0 * distance)
+    h_sq = (left.radius * left.radius) - (a * a)
+    if h_sq < -_EPS:
+        return ()
+    h = math.sqrt(max(0.0, h_sq))
+    x_mid = left.center_x + (a * dx / distance)
+    y_mid = left.center_y + (a * dy / distance)
+    offset_x = -dy * h / distance
+    offset_y = dx * h / distance
+    candidates = {(x_mid + offset_x, y_mid + offset_y), (x_mid - offset_x, y_mid - offset_y)}
 
-    if depth <= 0 or abs(delta) <= 15.0 * tolerance:
-        return left_area + right_area + (delta / 15.0)
-
-    return _adaptive_simpson_recursive(
-        function,
-        left,
-        left_mid,
-        midpoint,
-        f_left,
-        f_left_mid,
-        f_mid,
-        left_area,
-        tolerance / 2.0,
-        depth - 1,
-    ) + _adaptive_simpson_recursive(
-        function,
-        midpoint,
-        right_mid,
-        right,
-        f_mid,
-        f_right_mid,
-        f_right,
-        right_area,
-        tolerance / 2.0,
-        depth - 1,
-    )
+    matches: list[float] = []
+    for x, y in candidates:
+        if not (xmin - _EPS <= x <= xmax + _EPS):
+            continue
+        if abs(y - left.value_at(x)) <= 1e-9 and abs(y - right.value_at(x)) <= 1e-9:
+            matches.append(x)
+    return tuple(sorted(set(matches)))
 
 
-def _simpson(left: float, right: float, f_left: float, f_mid: float, f_right: float) -> float:
-    return ((right - left) / 6.0) * (f_left + (4.0 * f_mid) + f_right)
+def _circle_integral(function: _CircleFunction, x: float) -> float:
+    clamped = min(function.center_x + function.radius, max(function.center_x - function.radius, x))
+    shifted = clamped - function.center_x
+    radius = function.radius
+    ratio = 0.0 if radius <= _EPS else max(-1.0, min(1.0, shifted / radius))
+    root = math.sqrt(max(0.0, (radius * radius) - (shifted * shifted)))
+    circular = 0.5 * ((shifted * root) + ((radius * radius) * math.asin(ratio)))
+    return (function.center_y * clamped) + (function.sign * circular)
 
 
 def _compile_digit_masks_and_positions(board: Board) -> tuple[tuple[int, ...], tuple[Position, ...]]:

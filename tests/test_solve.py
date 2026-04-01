@@ -18,7 +18,7 @@ PROMPT_SAMPLE_INPUT = """\
 
 PROMPT_SAMPLE_OUTPUT = """\
 3.141592653590
-2.356194490120 2.000000000000"""
+2.356194490192 2.000000000000"""
 
 
 def test_parse_input_builds_mixed_paper_stack() -> None:

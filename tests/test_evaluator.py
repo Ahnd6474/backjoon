@@ -67,3 +67,48 @@ def test_tangent_shapes_do_not_create_false_overlap_area() -> None:
     visible = evaluate_visible_areas(papers)
 
     assert visible == pytest.approx((math.pi, 0.5), abs=1e-9, rel=1e-9)
+
+
+def test_overlapping_top_circles_only_subtract_their_union_from_bottom_circle() -> None:
+    papers: PaperStack = (
+        CirclePaper(center=(0, 0), radius=3),
+        CirclePaper(center=(-1, 0), radius=2),
+        CirclePaper(center=(1, 0), radius=2),
+    )
+
+    overlap = (2.0 * (2.0**2) * math.acos(2.0 / 4.0)) - (2.0 * math.sqrt(4.0 - 1.0))
+    expected_bottom = (9.0 * math.pi) - ((8.0 * math.pi) - overlap)
+    expected_middle = (4.0 * math.pi) - overlap
+
+    visible = evaluate_visible_areas(papers)
+
+    assert visible == pytest.approx((expected_bottom, expected_middle, 4.0 * math.pi), abs=1e-8, rel=1e-8)
+
+
+def test_precision_boundary_with_shared_triangle_edge_does_not_create_negative_area() -> None:
+    papers: PaperStack = (
+        TrianglePaper(vertices=((0, 0), (4, 0), (0, 4))),
+        TrianglePaper(vertices=((4, 0), (5, 0), (4, 1))),
+        CirclePaper(center=(6, 6), radius=1),
+    )
+
+    visible = evaluate_visible_areas(papers)
+
+    assert visible == pytest.approx((8.0, 0.5, math.pi), abs=1e-9, rel=1e-9)
+
+
+def test_large_mixed_stack_keeps_disjoint_occluders_exact() -> None:
+    occluders = tuple(
+        CirclePaper(center=(3 + (5 * index), 3), radius=1)
+        for index in range(12)
+    )
+    papers: PaperStack = (
+        TrianglePaper(vertices=((0, 0), (64, 0), (0, 64))),
+        *occluders,
+        TrianglePaper(vertices=((70, 0), (72, 0), (70, 2))),
+    )
+
+    visible = evaluate_visible_areas(papers)
+
+    expected = (2048.0 - (12.0 * math.pi), *(math.pi for _ in occluders), 2.0)
+    assert visible == pytest.approx(expected, abs=1e-8, rel=1e-8)
