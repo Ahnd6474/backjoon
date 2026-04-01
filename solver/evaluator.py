@@ -196,31 +196,10 @@ def _build_shape_profile(paper: Paper) -> _ShapeProfile:
 
 def _collect_breakpoints(target: _ShapeProfile, occluders: tuple[_ShapeProfile, ...]) -> tuple[float, ...]:
     points = {target.xmin, target.xmax}
-    slabs = [*target.slabs]
-    for occluder in occluders:
-        for slab in occluder.slabs:
-            left = max(target.xmin, slab.left)
-            right = min(target.xmax, slab.right)
-            if right - left <= _EPS:
-                continue
-            points.add(left)
-            points.add(right)
-            slabs.append(_ShapeSlab(left=left, right=right, lower=slab.lower, upper=slab.upper))
+    slabs = _collect_relevant_slabs(target, occluders, points)
 
-    boundary_pieces: list[tuple[float, float, BoundaryFunction]] = []
-    for slab in slabs:
-        boundary_pieces.append((slab.left, slab.right, slab.lower))
-        boundary_pieces.append((slab.left, slab.right, slab.upper))
-
-    for index, (left1, right1, function1) in enumerate(boundary_pieces):
-        for left2, right2, function2 in boundary_pieces[index + 1 :]:
-            left = max(target.xmin, left1, left2)
-            right = min(target.xmax, right1, right2)
-            if right - left <= _EPS:
-                continue
-            for point in _function_intersections(function1, function2, left, right):
-                if left + _EPS < point < right - _EPS:
-                    points.add(point)
+    for point in _collect_boundary_intersections(target, slabs):
+        points.add(point)
 
     return tuple(sorted(points))
 
@@ -243,29 +222,104 @@ def _covered_area_in_slab(
     if target_slab is None:
         return 0.0
 
+    clipped_intervals = _collect_clipped_intervals(target_slab, occluders, midpoint)
+
+    if not clipped_intervals:
+        return 0.0
+
+    return _merge_clipped_interval_area(clipped_intervals, left, right, midpoint)
+
+
+def _collect_relevant_slabs(
+    target: _ShapeProfile,
+    occluders: tuple[_ShapeProfile, ...],
+    points: set[float],
+) -> list[_ShapeSlab]:
+    slabs = [*target.slabs]
+    for occluder in occluders:
+        for slab in occluder.slabs:
+            clipped = _clip_slab_to_target(target, slab)
+            if clipped is None:
+                continue
+            points.add(clipped.left)
+            points.add(clipped.right)
+            slabs.append(clipped)
+    return slabs
+
+
+def _clip_slab_to_target(target: _ShapeProfile, slab: _ShapeSlab) -> _ShapeSlab | None:
+    left = max(target.xmin, slab.left)
+    right = min(target.xmax, slab.right)
+    if right - left <= _EPS:
+        return None
+    return _ShapeSlab(left=left, right=right, lower=slab.lower, upper=slab.upper)
+
+
+def _collect_boundary_intersections(
+    target: _ShapeProfile,
+    slabs: list[_ShapeSlab],
+) -> tuple[float, ...]:
+    points: set[float] = set()
+    boundary_pieces = _boundary_pieces(slabs)
+    for index, (left1, right1, function1) in enumerate(boundary_pieces):
+        for left2, right2, function2 in boundary_pieces[index + 1 :]:
+            left = max(target.xmin, left1, left2)
+            right = min(target.xmax, right1, right2)
+            if right - left <= _EPS:
+                continue
+            for point in _function_intersections(function1, function2, left, right):
+                if left + _EPS < point < right - _EPS:
+                    points.add(point)
+    return tuple(sorted(points))
+
+
+def _boundary_pieces(slabs: list[_ShapeSlab]) -> list[tuple[float, float, BoundaryFunction]]:
+    pieces: list[tuple[float, float, BoundaryFunction]] = []
+    for slab in slabs:
+        pieces.append((slab.left, slab.right, slab.lower))
+        pieces.append((slab.left, slab.right, slab.upper))
+    return pieces
+
+
+def _collect_clipped_intervals(
+    target_slab: _ShapeSlab,
+    occluders: tuple[_ShapeProfile, ...],
+    midpoint: float,
+) -> list[tuple[BoundaryFunction, BoundaryFunction]]:
     clipped_intervals: list[tuple[BoundaryFunction, BoundaryFunction]] = []
     for occluder in occluders:
         occluder_slab = _find_slab(occluder.slabs, midpoint)
         if occluder_slab is None:
             continue
+        clipped = _clip_occluder_interval(target_slab, occluder_slab, midpoint)
+        if clipped is not None:
+            clipped_intervals.append(clipped)
+    return clipped_intervals
 
-        lower = (
-            occluder_slab.lower
-            if occluder_slab.lower.value_at(midpoint) >= target_slab.lower.value_at(midpoint) - _EPS
-            else target_slab.lower
-        )
-        upper = (
-            occluder_slab.upper
-            if occluder_slab.upper.value_at(midpoint) <= target_slab.upper.value_at(midpoint) + _EPS
-            else target_slab.upper
-        )
-        if upper.value_at(midpoint) - lower.value_at(midpoint) <= _EPS:
-            continue
-        clipped_intervals.append((lower, upper))
 
-    if not clipped_intervals:
-        return 0.0
+def _clip_occluder_interval(
+    target_slab: _ShapeSlab,
+    occluder_slab: _ShapeSlab,
+    midpoint: float,
+) -> tuple[BoundaryFunction, BoundaryFunction] | None:
+    target_lower = target_slab.lower.value_at(midpoint)
+    target_upper = target_slab.upper.value_at(midpoint)
+    occluder_lower = occluder_slab.lower.value_at(midpoint)
+    occluder_upper = occluder_slab.upper.value_at(midpoint)
 
+    lower = occluder_slab.lower if occluder_lower >= target_lower - _EPS else target_slab.lower
+    upper = occluder_slab.upper if occluder_upper <= target_upper + _EPS else target_slab.upper
+    if upper.value_at(midpoint) - lower.value_at(midpoint) <= _EPS:
+        return None
+    return lower, upper
+
+
+def _merge_clipped_interval_area(
+    clipped_intervals: list[tuple[BoundaryFunction, BoundaryFunction]],
+    left: float,
+    right: float,
+    midpoint: float,
+) -> float:
     clipped_intervals.sort(key=lambda interval: interval[0].value_at(midpoint))
     merged_area = 0.0
     current_lower, current_upper = clipped_intervals[0]

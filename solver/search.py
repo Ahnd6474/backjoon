@@ -59,14 +59,23 @@ def _resolve_incremental_evaluator(
     if callable(direct):
         return direct
 
-    module_name = getattr(evaluator, "__module__", None)
-    if not isinstance(module_name, str):
-        return None
-
-    module = _import_evaluator_module(module_name)
+    module = _resolve_evaluator_module(evaluator)
     if module is None:
         return None
 
+    return _resolve_module_incremental_evaluator(module, evaluator)
+
+def _resolve_evaluator_module(evaluator: VisibleAreaEvaluator) -> ModuleType | None:
+    module_name = getattr(evaluator, "__module__", None)
+    if not isinstance(module_name, str):
+        return None
+    return _import_evaluator_module(module_name)
+
+
+def _resolve_module_incremental_evaluator(
+    module: ModuleType,
+    evaluator: VisibleAreaEvaluator,
+) -> Callable[[PaperStack], IncrementalVisibleAreas] | None:
     module_evaluator = getattr(module, getattr(evaluator, "__name__", ""), None)
     if module_evaluator is evaluator:
         incremental = getattr(module, "evaluate_prefix_visible_areas", None)
