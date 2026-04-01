@@ -1,11 +1,21 @@
 # backjoon
 
-`python solve.py` prints the committed 8x14 digit grid and nothing else.
+`solve.py` is the submission entrypoint for the visible-area paper stacking problem.
 
-The checked-in board was selected from the current deterministic search pipeline by running `search_board_with_result(score_board)` against the shared evaluator. The locked candidate in this branch has score `1906` and source `serpentine:r1c0`.
+It reads the problem input from standard input, evaluates each growing prefix with the repository's geometry evaluator and incremental search pipeline, and prints one output row per prefix. Each row contains the visible areas for papers `1..i`, formatted with 12 digits after the decimal point.
+
+Example:
+
+```text
+$ python solve.py
+2
+2 0 0 1
+1 0 0 2 0 0 2
+3.141592653590
+2.356194490120 2.000000000000
+```
 
 Useful local checks:
 
 - `python solve.py`
-- `python -c "import solve; print(solve.inspect_final_result())"`
 - `python -m pytest`

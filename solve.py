@@ -1,48 +1,55 @@
 from __future__ import annotations
 
-from solver.contracts import CirclePaper, IncrementalVisibleAreas, PaperStack, TrianglePaper, VisibleAreas
-from solver.search import SearchResult, search_board_with_result
+import sys
 
-FINAL_PAPERS: PaperStack = (
-    CirclePaper(center=(0, 0), radius=1),
-    TrianglePaper(vertices=((0, 0), (2, 0), (0, 2))),
-    CirclePaper(center=(3, 1), radius=2),
-)
-FINAL_ROWS: IncrementalVisibleAreas = (
-    (10.0,),
-    (20.0, 21.0),
-    (30.0, 31.0, 32.0),
-)
-FINAL_EVALUATIONS = 3
-FINAL_SOURCE = "prefix-scan"
+from solver.contracts import CirclePaper, PaperStack, TrianglePaper
+from solver.evaluator import evaluate_visible_areas
+from solver.search import search_board
 
 
-def sample_evaluator(papers: PaperStack, /) -> VisibleAreas:
-    """Deterministic evaluator used to lock the incremental search integration."""
+def parse_input(text: str) -> PaperStack:
+    tokens = text.split()
+    if not tokens:
+        return ()
 
-    prefix_index = len(papers)
-    return tuple(float((prefix_index * 10) + offset) for offset in range(prefix_index))
+    values = [int(token) for token in tokens]
+    paper_count = values[0]
+    cursor = 1
+    papers = []
+    for _ in range(paper_count):
+        paper_type = values[cursor]
+        cursor += 1
+        if paper_type == 1:
+            x1, y1, x2, y2, x3, y3 = values[cursor : cursor + 6]
+            cursor += 6
+            papers.append(
+                TrianglePaper(vertices=((x1, y1), (x2, y2), (x3, y3)))
+            )
+            continue
+        if paper_type == 2:
+            x, y, radius = values[cursor : cursor + 3]
+            cursor += 3
+            papers.append(CirclePaper(center=(x, y), radius=radius))
+            continue
+        raise ValueError(f"unsupported paper type: {paper_type}")
+
+    if cursor != len(values):
+        raise ValueError("unexpected trailing input")
+    return tuple(papers)
 
 
-def format_rows(rows: IncrementalVisibleAreas) -> str:
+def solve(text: str) -> str:
+    papers = parse_input(text)
+    rows = search_board(evaluate_visible_areas, papers)
+    return format_rows(rows)
+
+
+def format_rows(rows: tuple[tuple[float, ...], ...]) -> str:
     return "\n".join(" ".join(f"{area:.12f}" for area in row) for row in rows)
 
 
-def inspect_final_result() -> SearchResult:
-    """Re-run the incremental pipeline and verify the locked sample output stays in sync."""
-
-    result = search_board_with_result(sample_evaluator, FINAL_PAPERS)
-    if result.rows != FINAL_ROWS:
-        raise RuntimeError("committed rows are out of sync with solver.search")
-    if result.evaluations != FINAL_EVALUATIONS:
-        raise RuntimeError("committed evaluation count is out of sync with solver.search")
-    if result.source != FINAL_SOURCE:
-        raise RuntimeError("committed search source is out of sync with solver.search")
-    return result
-
-
 def main() -> None:
-    print(format_rows(FINAL_ROWS))
+    sys.stdout.write(solve(sys.stdin.read()))
 
 
 if __name__ == "__main__":
