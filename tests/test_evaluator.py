@@ -1,80 +1,69 @@
-from solver.evaluator import evaluate_board, trace_number
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from solver.contracts import CirclePaper, PaperStack, TrianglePaper
+from solver.evaluator import area_of_paper, evaluate_prefix_visible_areas, evaluate_visible_areas
 
 
-def make_board(*rows: str) -> tuple[tuple[int, ...], ...]:
-    assert len(rows) == 8
-    assert all(len(row) == 14 for row in rows)
-    return tuple(tuple(int(char) for char in row) for row in rows)
+def test_single_shapes_keep_their_full_area() -> None:
+    triangle = TrianglePaper(vertices=((0, 0), (4, 0), (0, 3)))
+    circle = CirclePaper(center=(8, -1), radius=2)
+
+    visible = evaluate_visible_areas((triangle, circle))
+
+    assert area_of_paper(triangle) == pytest.approx(6.0)
+    assert visible == pytest.approx((6.0, 4.0 * math.pi), abs=1e-9, rel=1e-9)
 
 
-def test_evaluate_board_reports_first_absent_digit() -> None:
-    board = make_board(
-        "12000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
+def test_mixed_stack_matches_prompt_prefixes() -> None:
+    papers: PaperStack = (
+        CirclePaper(center=(0, 0), radius=1),
+        TrianglePaper(vertices=((0, 0), (2, 0), (0, 2))),
     )
 
-    result = evaluate_board(board)
+    visible_prefixes = evaluate_prefix_visible_areas(papers)
 
-    assert result.max_prefix == 2
-    assert result.first_missing == 3
-    assert result.witness.reason == "digit_absent"
-    assert result.witness.failing_index == 0
-    assert result.witness.required_digit == 3
-    assert result.witness.frontier == ()
-    assert result.witness.candidate_positions == ()
+    assert len(visible_prefixes) == 2
+    assert visible_prefixes[0] == pytest.approx((math.pi,), abs=1e-9, rel=1e-9)
+    assert visible_prefixes[1] == pytest.approx((0.75 * math.pi, 2.0), abs=1e-9, rel=1e-9)
 
 
-def test_trace_number_allows_revisits_but_not_waiting_in_place() -> None:
-    board = make_board(
-        "12000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
-        "00000000000000",
+def test_multiple_top_circles_subtract_disjoint_covered_area_from_triangle() -> None:
+    papers: PaperStack = (
+        TrianglePaper(vertices=((0, 0), (10, 0), (0, 10))),
+        CirclePaper(center=(2, 2), radius=1),
+        CirclePaper(center=(6, 2), radius=1),
     )
 
-    revisiting_trace = trace_number(board, 121)
-    waiting_trace = trace_number(board, 11)
+    visible = evaluate_visible_areas(papers)
 
-    assert revisiting_trace.readable is True
-    assert revisiting_trace.reason == "complete"
-    assert revisiting_trace.frontier == ((0, 0),)
-
-    assert waiting_trace.readable is False
-    assert waiting_trace.reason == "digit_unreachable"
-    assert waiting_trace.failing_index == 1
-    assert waiting_trace.frontier == ((0, 0),)
-    assert waiting_trace.candidate_positions == ((0, 0),)
-
-
-def test_evaluate_board_reports_unreachable_next_digit_with_witness() -> None:
-    board = make_board(
-        "12345678999999",
-        "99999999999999",
-        "99999999999999",
-        "99999999999999",
-        "99999999999999",
-        "99999999999999",
-        "99999999999999",
-        "00000000000000",
+    assert visible == pytest.approx(
+        (50.0 - (2.0 * math.pi), math.pi, math.pi),
+        abs=1e-8,
+        rel=1e-8,
     )
 
-    result = evaluate_board(board)
 
-    assert result.max_prefix == 9
-    assert result.first_missing == 10
-    assert result.witness.reason == "digit_unreachable"
-    assert result.witness.failing_index == 1
-    assert result.witness.required_digit == 0
-    assert result.witness.frontier == ((0, 0),)
-    assert result.witness.candidate_positions[0] == (7, 0)
-    assert result.witness.candidate_positions[-1] == (7, 13)
+def test_identical_top_circle_fully_hides_bottom_circle() -> None:
+    papers: PaperStack = (
+        CirclePaper(center=(0, 0), radius=3),
+        CirclePaper(center=(0, 0), radius=3),
+    )
+
+    visible = evaluate_visible_areas(papers)
+
+    assert visible == pytest.approx((0.0, 9.0 * math.pi), abs=1e-9, rel=1e-9)
+
+
+def test_tangent_shapes_do_not_create_false_overlap_area() -> None:
+    papers: PaperStack = (
+        CirclePaper(center=(0, 0), radius=1),
+        TrianglePaper(vertices=((1, 0), (2, 0), (1, 1))),
+    )
+
+    visible = evaluate_visible_areas(papers)
+
+    assert visible == pytest.approx((math.pi, 0.5), abs=1e-9, rel=1e-9)
