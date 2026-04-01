@@ -13,29 +13,35 @@ def parse_input(text: str) -> PaperStack:
         return ()
 
     values = [int(token) for token in tokens]
-    paper_count = values[0]
-    cursor = 1
+    paper_count, cursor = values[0], 1
     papers = []
     for _ in range(paper_count):
-        paper_type = values[cursor]
-        cursor += 1
-        if paper_type == 1:
-            x1, y1, x2, y2, x3, y3 = values[cursor : cursor + 6]
-            cursor += 6
-            papers.append(
-                TrianglePaper(vertices=((x1, y1), (x2, y2), (x3, y3)))
-            )
-            continue
-        if paper_type == 2:
-            x, y, radius = values[cursor : cursor + 3]
-            cursor += 3
-            papers.append(CirclePaper(center=(x, y), radius=radius))
-            continue
-        raise ValueError(f"unsupported paper type: {paper_type}")
+        paper, cursor = _parse_paper(values, cursor)
+        papers.append(paper)
 
     if cursor != len(values):
         raise ValueError("unexpected trailing input")
     return tuple(papers)
+
+
+def _parse_paper(values: list[int], cursor: int) -> tuple[TrianglePaper | CirclePaper, int]:
+    paper_type = values[cursor]
+    cursor += 1
+    if paper_type == 1:
+        return _parse_triangle(values, cursor)
+    if paper_type == 2:
+        return _parse_circle(values, cursor)
+    raise ValueError(f"unsupported paper type: {paper_type}")
+
+
+def _parse_triangle(values: list[int], cursor: int) -> tuple[TrianglePaper, int]:
+    x1, y1, x2, y2, x3, y3 = values[cursor : cursor + 6]
+    return TrianglePaper(vertices=((x1, y1), (x2, y2), (x3, y3))), cursor + 6
+
+
+def _parse_circle(values: list[int], cursor: int) -> tuple[CirclePaper, int]:
+    x, y, radius = values[cursor : cursor + 3]
+    return CirclePaper(center=(x, y), radius=radius), cursor + 3
 
 
 def solve(text: str) -> str:

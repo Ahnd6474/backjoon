@@ -171,26 +171,39 @@ def _vertical_interval(paper: Paper, x: float) -> VerticalInterval | None:
         dy = math.sqrt(max(0.0, inside))
         return center_y - dy, center_y + dy
 
-    intersections: list[float] = []
-    vertices = paper.vertices
-    for start, end in zip(vertices, (*vertices[1:], vertices[0])):
-        x1, y1 = start
-        x2, y2 = end
-        if abs(x1 - x2) <= _EPS:
-            if abs(x - x1) <= _EPS:
-                intersections.extend((float(y1), float(y2)))
-            continue
-        lower_x = min(x1, x2)
-        upper_x = max(x1, x2)
-        if x < lower_x - _EPS or x > upper_x + _EPS:
-            continue
-        t = (x - x1) / (x2 - x1)
-        if -_EPS <= t <= 1 + _EPS:
-            intersections.append(y1 + (t * (y2 - y1)))
-
+    intersections = _triangle_intersections_at_x(paper, x)
     if not intersections:
         return None
     return min(intersections), max(intersections)
+
+
+def _triangle_intersections_at_x(paper: TrianglePaper, x: float) -> list[float]:
+    intersections: list[float] = []
+    vertices = paper.vertices
+    for start, end in zip(vertices, (*vertices[1:], vertices[0])):
+        edge_intersections = _edge_intersections_at_x(start, end, x)
+        if edge_intersections:
+            intersections.extend(edge_intersections)
+    return intersections
+
+
+def _edge_intersections_at_x(start: Position, end: Position, x: float) -> tuple[float, ...]:
+    x1, y1 = start
+    x2, y2 = end
+    if abs(x1 - x2) <= _EPS:
+        if abs(x - x1) <= _EPS:
+            return float(y1), float(y2)
+        return ()
+
+    lower_x = min(x1, x2)
+    upper_x = max(x1, x2)
+    if x < lower_x - _EPS or x > upper_x + _EPS:
+        return ()
+
+    t = (x - x1) / (x2 - x1)
+    if -_EPS <= t <= 1 + _EPS:
+        return (y1 + (t * (y2 - y1)),)
+    return ()
 
 
 def _intersect_intervals(
