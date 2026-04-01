@@ -1,42 +1,48 @@
 from __future__ import annotations
 
-from solver.contracts import Board
-from solver.evaluator import score_board
+from solver.contracts import CirclePaper, IncrementalVisibleAreas, PaperStack, TrianglePaper, VisibleAreas
 from solver.search import SearchResult, search_board_with_result
 
-FINAL_BOARD: Board = (
-    (0, 1, 2, 6, 4, 5, 6, 1, 8, 9, 0, 1, 2, 3),
-    (3, 6, 1, 4, 3, 0, 1, 2, 9, 8, 7, 4, 5, 4),
-    (0, 9, 4, 1, 2, 3, 8, 5, 7, 1, 8, 9, 0, 1),
-    (5, 4, 3, 2, 1, 6, 6, 7, 1, 6, 5, 3, 3, 2),
-    (6, 7, 8, 9, 0, 1, 4, 9, 4, 5, 9, 7, 1, 2),
-    (3, 1, 4, 0, 9, 8, 7, 2, 5, 7, 0, 3, 7, 0),
-    (4, 1, 5, 6, 8, 9, 2, 0, 2, 3, 0, 1, 6, 7),
-    (1, 0, 1, 8, 7, 6, 1, 1, 3, 5, 1, 0, 2, 8),
+FINAL_PAPERS: PaperStack = (
+    CirclePaper(center=(0, 0), radius=1),
+    TrianglePaper(vertices=((0, 0), (2, 0), (0, 2))),
+    CirclePaper(center=(3, 1), radius=2),
 )
-FINAL_SCORE = 1906
-FINAL_SOURCE = "serpentine:r1c0"
+FINAL_ROWS: IncrementalVisibleAreas = (
+    (10.0,),
+    (20.0, 21.0),
+    (30.0, 31.0, 32.0),
+)
+FINAL_EVALUATIONS = 3
+FINAL_SOURCE = "prefix-scan"
 
 
-def format_board(board: Board) -> str:
-    return "\n".join("".join(str(digit) for digit in row) for row in board)
+def sample_evaluator(papers: PaperStack, /) -> VisibleAreas:
+    """Deterministic evaluator used to lock the incremental search integration."""
+
+    prefix_index = len(papers)
+    return tuple(float((prefix_index * 10) + offset) for offset in range(prefix_index))
+
+
+def format_rows(rows: IncrementalVisibleAreas) -> str:
+    return "\n".join(" ".join(f"{area:.12f}" for area in row) for row in rows)
 
 
 def inspect_final_result() -> SearchResult:
-    """Re-run the deterministic search and verify the committed board stays in sync."""
+    """Re-run the incremental pipeline and verify the locked sample output stays in sync."""
 
-    result = search_board_with_result(score_board)
-    if result.board != FINAL_BOARD:
-        raise RuntimeError("committed board is out of sync with solver.search")
-    if result.score != FINAL_SCORE:
-        raise RuntimeError("committed score is out of sync with solver.evaluator")
+    result = search_board_with_result(sample_evaluator, FINAL_PAPERS)
+    if result.rows != FINAL_ROWS:
+        raise RuntimeError("committed rows are out of sync with solver.search")
+    if result.evaluations != FINAL_EVALUATIONS:
+        raise RuntimeError("committed evaluation count is out of sync with solver.search")
     if result.source != FINAL_SOURCE:
         raise RuntimeError("committed search source is out of sync with solver.search")
     return result
 
 
 def main() -> None:
-    print(format_board(FINAL_BOARD))
+    print(format_rows(FINAL_ROWS))
 
 
 if __name__ == "__main__":
