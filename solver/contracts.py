@@ -7,9 +7,17 @@ Coordinate: TypeAlias = int
 Radius: TypeAlias = int
 VisibleArea: TypeAlias = float
 VisibleAreas: TypeAlias = tuple[VisibleArea, ...]
+VisibleAreaRow: TypeAlias = VisibleAreas
 IncrementalVisibleAreas: TypeAlias = tuple[VisibleAreas, ...]
+VisibleAreaRows: TypeAlias = IncrementalVisibleAreas
+PaperTypeCode: TypeAlias = Literal[1, 2]
 
 TRIANGLE_VERTEX_COUNT: Final[int] = 3
+TRIANGLE_TYPE_CODE: Final[PaperTypeCode] = 1
+CIRCLE_TYPE_CODE: Final[PaperTypeCode] = 2
+VISIBLE_AREA_DECIMAL_PLACES: Final[int] = 12
+PREFIX_OUTPUT_ORDER: Final[str] = "rows follow input prefixes 1..N"
+ROW_VISIBLE_AREA_ORDER: Final[str] = "areas stay in paper input order within each prefix"
 
 Point: TypeAlias = tuple[Coordinate, Coordinate]
 TriangleVertices: TypeAlias = tuple[Point, Point, Point]
@@ -36,6 +44,13 @@ Paper: TypeAlias = TrianglePaper | CirclePaper
 PaperStack: TypeAlias = tuple[Paper, ...]
 
 
+class PaperInputParser(Protocol):
+    """Callable that parses the paper count followed by typed integer paper records."""
+
+    def __call__(self, text: str, /) -> PaperStack:
+        ...
+
+
 class VisibleAreaEvaluator(Protocol):
     """Callable that returns the visible area for each paper in the current stack."""
 
@@ -53,6 +68,26 @@ class IncrementalVisibilitySolver(Protocol):
         /,
     ) -> IncrementalVisibleAreas:
         ...
+
+
+class VisibleAreaRowsFormatter(Protocol):
+    """Callable that emits one space-delimited visible-area row per evaluated prefix."""
+
+    def __call__(self, rows: VisibleAreaRows, /) -> str:
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionTarget:
+    """Final contest delivery target for the solver implementation."""
+
+    language: Literal["c++17"] = "c++17"
+    translation_units: Literal[1] = 1
+    entrypoint: Literal["main"] = "main"
+    file_name: str = "main.cpp"
+
+
+SUBMISSION_TARGET: Final[SubmissionTarget] = SubmissionTarget()
 
 
 # Compatibility aliases kept until the implementation modules migrate off the
