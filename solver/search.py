@@ -159,18 +159,13 @@ def _improve_board(
         changed = False
         for row, col in _iter_scan_order():
             current_digit = current_board[row][col]
-            best_digit = current_digit
-            best_score = current_score
-
-            for digit in _candidate_digits(current_board, row, col):
-                if digit == current_digit:
-                    continue
-
-                trial_board = _with_digit(current_board, row, col, digit)
-                trial_score = state.score(trial_board)
-                if trial_score > best_score:
-                    best_digit = digit
-                    best_score = trial_score
+            best_digit, best_score = _best_digit_for_cell(
+                current_board,
+                current_score,
+                state,
+                row,
+                col,
+            )
 
             if best_digit != current_digit:
                 current_board = _with_digit(current_board, row, col, best_digit)
@@ -182,6 +177,28 @@ def _improve_board(
             break
 
     return current_board, current_score
+
+
+def _best_digit_for_cell(
+    board: Board,
+    current_score: Score,
+    state: _SearchState,
+    row: int,
+    col: int,
+) -> tuple[Digit, Score]:
+    current_digit = board[row][col]
+    best_digit = current_digit
+    best_score = current_score
+    for digit in _candidate_digits(board, row, col):
+        if digit == current_digit:
+            continue
+
+        trial_board = _with_digit(board, row, col, digit)
+        trial_score = state.score(trial_board)
+        if trial_score > best_score:
+            best_digit = digit
+            best_score = trial_score
+    return best_digit, best_score
 
 
 def _iter_scan_order() -> Iterable[Coordinate]:
@@ -208,9 +225,12 @@ def _candidate_digits(board: Board, row: int, col: int) -> tuple[Digit, ...]:
     rotated = [ALL_DIGITS[(rotation_start + offset) % len(ALL_DIGITS)] for offset in range(len(ALL_DIGITS))]
 
     ordered: list[Digit] = []
+    seen = [False] * len(ALL_DIGITS)
     for digit in (*prioritized, *rotated):
-        if digit not in ordered:
-            ordered.append(digit)
+        if seen[digit]:
+            continue
+        ordered.append(digit)
+        seen[digit] = True
     return tuple(ordered)
 
 

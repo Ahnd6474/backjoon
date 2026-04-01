@@ -44,74 +44,80 @@ class BoardEvaluation:
     witness: NumberTrace
 
 
-class _CompiledBoard:
-    def __init__(self, board: Board) -> None:
-        if len(board) != BOARD_ROWS:
+def _compile_digit_masks_and_positions(board: Board) -> tuple[tuple[int, ...], tuple[Position, ...]]:
+    if len(board) != BOARD_ROWS:
+        raise ValueError(
+            f"board must have exactly {BOARD_ROWS} rows; received {len(board)}"
+        )
+
+    digit_masks = [0] * 10
+    positions: list[Position] = []
+    for row_index, row in enumerate(board):
+        if len(row) != BOARD_COLUMNS:
             raise ValueError(
-                f"board must have exactly {BOARD_ROWS} rows; received {len(board)}"
+                f"row {row_index} must have exactly {BOARD_COLUMNS} columns; "
+                f"received {len(row)}"
             )
 
-        digit_masks = [0] * 10
-        positions: list[Position] = []
-
-        for row_index, row in enumerate(board):
-            if len(row) != BOARD_COLUMNS:
+        for column_index, digit in enumerate(row):
+            if not isinstance(digit, int) or not 0 <= digit <= 9:
                 raise ValueError(
-                    f"row {row_index} must have exactly {BOARD_COLUMNS} columns; "
-                    f"received {len(row)}"
+                    "board entries must be integers between 0 and 9; "
+                    f"received {digit!r} at {(row_index, column_index)}"
                 )
 
-            for column_index, digit in enumerate(row):
-                if not isinstance(digit, int) or not 0 <= digit <= 9:
-                    raise ValueError(
-                        "board entries must be integers between 0 and 9; "
-                        f"received {digit!r} at {(row_index, column_index)}"
-                    )
+            cell_index = (row_index * BOARD_COLUMNS) + column_index
+            digit_masks[digit] |= 1 << cell_index
+            positions.append((row_index, column_index))
 
-                cell_index = (row_index * BOARD_COLUMNS) + column_index
-                digit_masks[digit] |= 1 << cell_index
-                positions.append((row_index, column_index))
+    return tuple(digit_masks), tuple(positions)
 
-        neighbor_masks = [0] * len(positions)
-        for cell_index, (row_index, column_index) in enumerate(positions):
-            mask = 0
-            for row_delta, column_delta in _NEIGHBOR_DELTAS:
-                next_row = row_index + row_delta
-                next_column = column_index + column_delta
-                if not (0 <= next_row < BOARD_ROWS and 0 <= next_column < BOARD_COLUMNS):
-                    continue
-                neighbor_index = (next_row * BOARD_COLUMNS) + next_column
-                mask |= 1 << neighbor_index
-            neighbor_masks[cell_index] = mask
 
-        self._digit_masks = tuple(digit_masks)
-        self._positions = tuple(positions)
-        self._neighbor_masks = tuple(neighbor_masks)
+def _build_neighbor_masks(positions: tuple[Position, ...]) -> tuple[int, ...]:
+    neighbor_masks = [0] * len(positions)
+    for cell_index, (row_index, column_index) in enumerate(positions):
+        mask = 0
+        for row_delta, column_delta in _NEIGHBOR_DELTAS:
+            next_row = row_index + row_delta
+            next_column = column_index + column_delta
+            if not (0 <= next_row < BOARD_ROWS and 0 <= next_column < BOARD_COLUMNS):
+                continue
+            neighbor_index = (next_row * BOARD_COLUMNS) + next_column
+            mask |= 1 << neighbor_index
+        neighbor_masks[cell_index] = mask
+    return tuple(neighbor_masks)
+
+
+class _CompiledBoard:
+    def __init__(self, board: Board) -> None:
+        digit_masks, positions = _compile_digit_masks_and_positions(board)
+        self._digit_masks = digit_masks
+        self._positions = positions
+        self._neighbor_masks = _build_neighbor_masks(positions)
 
     def trace_number(self, number: int) -> NumberTrace:
         if number < 0:
             raise ValueError(f"number must be non-negative; received {number}")
 
         digits = str(number)
-        current_mask = self._digit_masks[int(digits[0])]
+        first_digit = int(digits[0])
+        current_mask = self._digit_masks[first_digit]
         if current_mask == 0:
-            return NumberTrace(
+            return self._make_trace(
                 number=number,
                 digits=digits,
                 readable=False,
                 reason="digit_absent",
                 failing_index=0,
-                required_digit=int(digits[0]),
+                required_digit=first_digit,
                 matched_prefix_length=0,
-                frontier=(),
-                candidate_positions=(),
             )
 
         for digit_index, digit_char in enumerate(digits[1:], start=1):
             required_digit = int(digit_char)
             candidate_mask = self._digit_masks[required_digit]
             if candidate_mask == 0:
-                return NumberTrace(
+                return self._make_trace(
                     number=number,
                     digits=digits,
                     readable=False,
@@ -119,13 +125,12 @@ class _CompiledBoard:
                     failing_index=digit_index,
                     required_digit=required_digit,
                     matched_prefix_length=digit_index,
-                    frontier=self._positions_from_mask(current_mask),
-                    candidate_positions=(),
+                    frontier_mask=current_mask,
                 )
 
             next_mask = self._advance(current_mask) & candidate_mask
             if next_mask == 0:
-                return NumberTrace(
+                return self._make_trace(
                     number=number,
                     digits=digits,
                     readable=False,
@@ -133,13 +138,13 @@ class _CompiledBoard:
                     failing_index=digit_index,
                     required_digit=required_digit,
                     matched_prefix_length=digit_index,
-                    frontier=self._positions_from_mask(current_mask),
-                    candidate_positions=self._positions_from_mask(candidate_mask),
+                    frontier_mask=current_mask,
+                    candidate_mask=candidate_mask,
                 )
 
             current_mask = next_mask
 
-        return NumberTrace(
+        return self._make_trace(
             number=number,
             digits=digits,
             readable=True,
@@ -147,8 +152,7 @@ class _CompiledBoard:
             failing_index=None,
             required_digit=None,
             matched_prefix_length=len(digits),
-            frontier=self._positions_from_mask(current_mask),
-            candidate_positions=(),
+            frontier_mask=current_mask,
         )
 
     def _advance(self, current_mask: int) -> int:
@@ -160,6 +164,31 @@ class _CompiledBoard:
             next_mask |= self._neighbor_masks[cell_index]
             remaining_mask ^= least_significant_bit
         return next_mask
+
+    def _make_trace(
+        self,
+        *,
+        number: int,
+        digits: str,
+        readable: bool,
+        reason: TraceReason,
+        failing_index: int | None,
+        required_digit: int | None,
+        matched_prefix_length: int,
+        frontier_mask: int = 0,
+        candidate_mask: int = 0,
+    ) -> NumberTrace:
+        return NumberTrace(
+            number=number,
+            digits=digits,
+            readable=readable,
+            reason=reason,
+            failing_index=failing_index,
+            required_digit=required_digit,
+            matched_prefix_length=matched_prefix_length,
+            frontier=self._positions_from_mask(frontier_mask),
+            candidate_positions=self._positions_from_mask(candidate_mask),
+        )
 
     def _positions_from_mask(self, mask: int) -> tuple[Position, ...]:
         ordered_positions: list[Position] = []
